@@ -392,25 +392,21 @@ async function submitSetup() {
   if (!key) { err.textContent = 'Please enter the auth key.'; return; }
 
   const btn = document.querySelector('.setup-btn');
-  btn.textContent = 'Checking…';
-  btn.disabled = true;
+  btn.textContent = 'Checking…'; btn.disabled = true;
 
   try {
-    const res = await fetch(`${url}?action=getHistory&key=${encodeURIComponent(key)}`);
-    const data = await res.json();
-    if (data.error === 'Unauthorized') throw new Error('Wrong auth key.');
-    // Success
+    const testUrl = `${url}?action=getHistory&key=${encodeURIComponent(key)}`;
+    const data = await jsonp(testUrl);
+    if (data && data.error === 'Unauthorized') throw new Error('Wrong auth key — check it and try again.');
     localStorage.setItem('mt_url', url);
     localStorage.setItem('mt_key', key);
-    SCRIPT_URL = url;
-    AUTH_KEY = key;
+    SCRIPT_URL = url; AUTH_KEY = key;
     document.getElementById('setupScreen').classList.add('hidden');
     boot();
   } catch(e) {
     err.textContent = e.message || 'Could not connect. Check the URL and key.';
   } finally {
-    btn.textContent = 'Connect →';
-    btn.disabled = false;
+    btn.textContent = 'Connect →'; btn.disabled = false;
   }
 }
 
@@ -422,24 +418,40 @@ function clearSetup() {
 
 // ============================================================
 // API helpers
+// GAS cross-origin workaround:
+//   Reads  → JSONP (script tag, bypasses CORS entirely)
+//   Writes → fetch no-cors (can't read response; reload to confirm)
 // ============================================================
+function jsonp(url) {
+  return new Promise((resolve, reject) => {
+    const id = 'gs_' + Math.random().toString(36).slice(2);
+    const s  = document.createElement('script');
+    const cleanup = () => { delete window[id]; s.remove(); };
+    window[id] = (data) => { cleanup(); resolve(data); };
+    s.src     = url + '&callback=' + id;
+    s.onerror = () => { cleanup(); reject(new Error('Connection failed — check your Script URL and auth key.')); };
+    document.head.appendChild(s);
+    setTimeout(() => { if (window[id]) { cleanup(); reject(new Error('Request timed out.')); } }, 15000);
+  });
+}
+
 async function apiGet(action) {
-  const res = await fetch(`${SCRIPT_URL}?action=${action}&key=${encodeURIComponent(AUTH_KEY)}`);
-  const data = await res.json();
-  if (data.error === 'Unauthorized') throw new Error('Unauthorized');
+  const url  = `${SCRIPT_URL}?action=${action}&key=${encodeURIComponent(AUTH_KEY)}`;
+  const data = await jsonp(url);
+  if (data && data.error === 'Unauthorized') throw new Error('Wrong auth key.');
+  if (data && data.error)                   throw new Error(data.error);
   return data;
 }
 
 async function apiPost(payload) {
-  const res = await fetch(SCRIPT_URL, {
-    method: 'POST',
+  // no-cors: request goes through, redirect is followed, but response is opaque (unreadable).
+  // Caller must reload after a delay to confirm the write landed.
+  await fetch(SCRIPT_URL, {
+    method:  'POST',
+    mode:    'no-cors',
     headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ ...payload, key: AUTH_KEY }),
-    redirect: 'follow'
+    body:    JSON.stringify({ ...payload, key: AUTH_KEY })
   });
-  const data = await res.json();
-  if (data.error === 'Unauthorized') throw new Error('Unauthorized');
-  return data;
 }
 
 // ============================================================
@@ -621,14 +633,19 @@ async function confirmLog() {
   const med = currentMed, givenBy = currentGiver, timestamp = logDateTime.toISOString();
   closeModal();
   setButtonLoading(med, true);
+  // Optimistic update immediately
+  history.unshift({ timestamp, medication: med, givenBy, sheetRow: null });
+  updateAllCards(); renderHistory();
+  showToast('⏳ Saving ' + med + '…');
   try {
-    const result = await apiPost({ action: 'logDose', medication: med, givenBy, timestamp });
-    history.unshift({ timestamp: result.timestamp, medication: med, givenBy, sheetRow: null });
-    updateAllCards(); renderHistory();
-    showToast('✅ ' + med + ' logged by ' + givenBy + '!');
-    loadHistory(); // reload to get real sheetRow
+    await apiPost({ action: 'logDose', medication: med, givenBy, timestamp });
+    // Wait for GAS to process, then reload to get real sheetRow
+    setTimeout(async () => {
+      await loadHistory();
+      showToast('✅ ' + med + ' logged by ' + givenBy + '!');
+    }, 2500);
   } catch(e) {
-    showToast('❌ Failed to log dose');
+    showToast('❌ Failed to save');
   } finally {
     setButtonLoading(med, false);
   }
@@ -676,7 +693,8 @@ async function confirmEditTime() {
     await apiPost({ action: 'updateDoseTime', sheetRow: item.sheetRow, newTimestamp });
     history[editingIndex].timestamp = newTimestamp;
     closeEditModal(); updateAllCards(); renderHistory();
-    showToast('✅ Time updated');
+    showToast('⏳ Saving time…');
+    setTimeout(loadHistory, 2500);
   } catch(e) {
     showToast('❌ Could not save');
   } finally {
@@ -697,7 +715,8 @@ async function confirmDeleteDose() {
     await apiPost({ action: 'deleteDose', sheetRow: item.sheetRow });
     history.splice(editingIndex, 1);
     closeEditModal(); updateAllCards(); renderHistory();
-    showToast('🗑 Dose deleted');
+    showToast('⏳ Deleting…');
+    setTimeout(loadHistory, 2500);
   } catch(e) {
     del.disabled = false; del.classList.remove('confirming'); del.textContent = '🗑 Delete this dose';
     showToast('❌ Could not delete');
