@@ -32,16 +32,15 @@ function checkAuth(key) {
 
 // ---- GET handler (read operations) ----
 function doGet(e) {
-  const key = (e.parameter && e.parameter.key) || '';
-  if (!checkAuth(key)) return deny();
+  const key      = (e.parameter && e.parameter.key)      || '';
+  const action   = (e.parameter && e.parameter.action)   || '';
+  const callback = (e.parameter && e.parameter.callback) || '';
 
-  const action = e.parameter.action || '';
+  if (!checkAuth(key)) return respond({ error: 'Unauthorized' }, callback);
 
-  if (action === 'getHistory') {
-    return json(getHistoryData());
-  }
+  if (action === 'getHistory') return respond(getHistoryData(), callback);
 
-  return json({ error: 'Unknown action' });
+  return respond({ error: 'Unknown action' }, callback);
 }
 
 // ---- POST handler (write operations) ----
@@ -127,9 +126,16 @@ function getOrCreateSheet() {
   return sheet;
 }
 
-function json(data) {
+// Supports both plain JSON and JSONP (callback param)
+function respond(data, callback) {
+  const body = JSON.stringify(data);
+  if (callback) {
+    return ContentService
+      .createTextOutput(callback + '(' + body + ')')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(data))
+    .createTextOutput(body)
     .setMimeType(ContentService.MimeType.JSON);
 }
 
